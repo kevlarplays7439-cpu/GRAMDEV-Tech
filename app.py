@@ -131,6 +131,19 @@ elif page == "🔮 AI Forecasting (LSTM)":
             st.error("Not enough data to train.")
         else:
             with st.spinner("Training Neural Network..."):
+                # 1. Get the Last Date in your Data
+                last_date = subset['Date'].iloc[-1]
+                
+                # 2. Calculate the Next Date (Skip weekends if Friday)
+                next_date = last_date + pd.Timedelta(days=1)
+                if next_date.weekday() == 5: # If Saturday
+                    next_date += pd.Timedelta(days=2) # Jump to Monday
+                elif next_date.weekday() == 6: # If Sunday
+                    next_date += pd.Timedelta(days=1) # Jump to Monday
+                
+                formatted_date = next_date.strftime("%d %b %Y") # e.g., "19 Dec 2025"
+
+                # 3. Train Model
                 data = subset['Close'].values.reshape(-1, 1)
                 scaler = MinMaxScaler(feature_range=(0, 1))
                 scaled_data = scaler.fit_transform(data)
@@ -150,12 +163,39 @@ elif page == "🔮 AI Forecasting (LSTM)":
                 model.compile(optimizer='adam', loss='mean_squared_error')
                 model.fit(x_train, y_train, epochs=1, batch_size=1, verbose=0)
                 
+                # 4. Predict
                 last_days = scaled_data[-days_lookback:]
                 x_test = np.reshape(last_days, (1, days_lookback, 1))
                 predicted_price = scaler.inverse_transform(model.predict(x_test))
                 
-                st.success(f"🧠 LSTM Prediction for Tomorrow: ₹{predicted_price[0][0]:.2f}")
-
+                # 5. Display with Date
+                st.success(f"🧠 LSTM Prediction for {formatted_date}: ₹{predicted_price[0][0]:.2f}")                # 3. Train Model
+                data = subset['Close'].values.reshape(-1, 1)
+                scaler = MinMaxScaler(feature_range=(0, 1))
+                scaled_data = scaler.fit_transform(data)
+                
+                x_train, y_train = [], []
+                for i in range(days_lookback, len(scaled_data)):
+                    x_train.append(scaled_data[i-days_lookback:i, 0])
+                    y_train.append(scaled_data[i, 0])
+                
+                x_train, y_train = np.array(x_train), np.array(y_train)
+                x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+                
+                model = Sequential()
+                model.add(LSTM(units=50, return_sequences=True, input_shape=(x_train.shape[1], 1)))
+                model.add(LSTM(units=50))
+                model.add(Dense(1))
+                model.compile(optimizer='adam', loss='mean_squared_error')
+                model.fit(x_train, y_train, epochs=1, batch_size=1, verbose=0)
+                
+                # 4. Predict
+                last_days = scaled_data[-days_lookback:]
+                x_test = np.reshape(last_days, (1, days_lookback, 1))
+                predicted_price = scaler.inverse_transform(model.predict(x_test))
+                
+                # 5. Display with Date
+                st.success(f"🧠 LSTM Prediction for {formatted_date}: ₹{predicted_price[0][0]:.2f}")
 # --- PAGE 3: PORTFOLIO ---
 elif page == "⚖️ Portfolio Opt.":
     st.title("⚖️ Portfolio Optimization")
