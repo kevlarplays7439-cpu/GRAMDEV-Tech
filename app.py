@@ -7,12 +7,12 @@ from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
 from scipy.optimize import minimize
+from statsmodels.tsa.arima.model import ARIMA
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Wide Moat AI Dashboard", layout="wide")
 
-# --- 1. MAPPING DICTIONARY ( The Fix for "Action_Const.Eq" ) ---
-# This maps the long names in your Scores file to the Tickers in your Price file.
+# --- 1. MAPPING DICTIONARY ( The Fix for Ticker Mismatch ) ---
 TICKER_MAP = {
     "Action": "ACE", "Bharat": "BEL", "Blue_Star": "BLUESTARCO", "Caplin": "CAPLIPOINT",
     "C_D_S_L": "CDSL", "Dr_Lal": "LALPATHLAB", "Dynacons": "DYNPRO", "Dynamic": "DYCL",
@@ -29,17 +29,11 @@ TICKER_MAP = {
 }
 
 def normalize_ticker(name):
-    """Converts 'Action_Const.Eq' -> 'ACE' using the map."""
-    # 1. Direct match?
     if name in TICKER_MAP.values(): return name
-    
-    # 2. Check keywords in the map
     name_upper = name.upper()
     for key, value in TICKER_MAP.items():
         if key.upper() in name_upper:
             return value
-            
-    # 3. Fallback: Return original
     return name
 
 # --- 2. LOAD DATA ---
@@ -50,7 +44,7 @@ def load_data():
         fund = pd.read_csv("fundamentals.csv")
         price = pd.read_csv("price_data.csv")
 
-        # FIX: Apply the name correction to Scores and Fundamentals
+        # FIX: Apply the name correction
         scores['Ticker'] = scores['Ticker'].apply(normalize_ticker)
         fund['Ticker'] = fund['Ticker'].apply(normalize_ticker)
 
@@ -72,21 +66,18 @@ if scores_df is None:
 
 # --- SIDEBAR ---
 st.sidebar.title("🚀 Navigation")
-page = st.sidebar.radio("Go to", ["📊 Executive Dashboard", "🔮 AI Forecasting (LSTM)", "⚖️ Portfolio Opt."])
+page = st.sidebar.radio("Go to", ["📊 Executive Dashboard", "🔮 Phase A: AI Forecasting", "⚖️ Phase B: Portfolio Opt."])
 
 # --- PAGE 1: EXECUTIVE DASHBOARD ---
 if page == "📊 Executive Dashboard":
     st.title("📊 Wide Moat Executive Summary")
     
-    # Select Company
     tickers = scores_df['Ticker'].unique()
     selected_ticker = st.selectbox("Select Company", tickers)
     
-    # Get Data safely
     subset_price = price_df[price_df['Ticker'] == selected_ticker].sort_values('Date')
     subset_fund = fund_df[fund_df['Ticker'] == selected_ticker].sort_values('Date')
 
-    # Metrics
     c1, c2, c3 = st.columns(3)
     
     # Score
@@ -99,7 +90,6 @@ if page == "📊 Executive Dashboard":
         c2.metric("Latest Price", f"₹{subset_price.iloc[-1]['Close']:,.2f}")
     else:
         c2.metric("Latest Price", "No Data")
-        st.warning(f"Could not find price data for '{selected_ticker}'. Check TICKER_MAP in code.")
 
     # Sales
     if not subset_fund.empty:
@@ -108,107 +98,81 @@ if page == "📊 Executive Dashboard":
     else:
         c3.metric("Latest Sales", "No Data")
 
-    # Chart
     st.subheader("📈 Price History")
     if not subset_price.empty:
         fig = px.line(subset_price, x='Date', y='Close')
         st.plotly_chart(fig, use_container_width=True)
 
-# --- PAGE 2: AI FORECASTING (LSTM) ---
-elif page == "🔮 AI Forecasting (LSTM)":
-    st.title("🔮 Deep Learning Price Forecast")
+# --- PAGE 2: PHASE A (FORECASTING) ---
+elif page == "🔮 Phase A: AI Forecasting":
+    st.title("🔮 Phase A: Deep Learning Forecast")
     
-    # Only allow selecting tickers that HAVE price data
     valid_tickers = sorted(price_df['Ticker'].unique())
     ticker = st.selectbox("Select Stock", valid_tickers)
     
+    model_type = st.radio("Select Model", ["LSTM (Deep Learning)", "ARIMA (Statistical)"])
     days_lookback = st.slider("Training Lookback Days", 30, 365, 60)
     
-    if st.button("Train LSTM Model"):
+    if st.button("Run Forecast"):
         subset = price_df[price_df['Ticker'] == ticker].sort_values('Date')
         
         if len(subset) < days_lookback + 10:
             st.error("Not enough data to train.")
         else:
-            with st.spinner("Training Neural Network..."):
-                # 1. Get the Last Date in your Data
-                last_date = subset['Date'].iloc[-1]
-                
-                # 2. Calculate the Next Date (Skip weekends if Friday)
-                next_date = last_date + pd.Timedelta(days=1)
-                if next_date.weekday() == 5: # If Saturday
-                    next_date += pd.Timedelta(days=2) # Jump to Monday
-                elif next_date.weekday() == 6: # If Sunday
-                    next_date += pd.Timedelta(days=1) # Jump to Monday
-                
-                formatted_date = next_date.strftime("%d %b %Y") # e.g., "19 Dec 2025"
+            # Calculate Next Date
+            last_date = subset['Date'].iloc[-1]
+            next_date = last_date + pd.Timedelta(days=1)
+            if next_date.weekday() == 5: next_date += pd.Timedelta(days=2)
+            elif next_date.weekday() == 6: next_date += pd.Timedelta(days=1)
+            formatted_date = next_date.strftime("%d %b %Y")
 
-                # 3. Train Model
-                data = subset['Close'].values.reshape(-1, 1)
-                scaler = MinMaxScaler(feature_range=(0, 1))
-                scaled_data = scaler.fit_transform(data)
-                
-                x_train, y_train = [], []
-                for i in range(days_lookback, len(scaled_data)):
-                    x_train.append(scaled_data[i-days_lookback:i, 0])
-                    y_train.append(scaled_data[i, 0])
-                
-                x_train, y_train = np.array(x_train), np.array(y_train)
-                x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
-                
-                model = Sequential()
-                model.add(LSTM(units=50, return_sequences=True, input_shape=(x_train.shape[1], 1)))
-                model.add(LSTM(units=50))
-                model.add(Dense(1))
-                model.compile(optimizer='adam', loss='mean_squared_error')
-                model.fit(x_train, y_train, epochs=1, batch_size=1, verbose=0)
-                
-                # 4. Predict
-                last_days = scaled_data[-days_lookback:]
-                x_test = np.reshape(last_days, (1, days_lookback, 1))
-                predicted_price = scaler.inverse_transform(model.predict(x_test))
-                
-                # 5. Display with Date
-                st.success(f"🧠 LSTM Prediction for {formatted_date}: ₹{predicted_price[0][0]:.2f}")                # 3. Train Model
-                data = subset['Close'].values.reshape(-1, 1)
-                scaler = MinMaxScaler(feature_range=(0, 1))
-                scaled_data = scaler.fit_transform(data)
-                
-                x_train, y_train = [], []
-                for i in range(days_lookback, len(scaled_data)):
-                    x_train.append(scaled_data[i-days_lookback:i, 0])
-                    y_train.append(scaled_data[i, 0])
-                
-                x_train, y_train = np.array(x_train), np.array(y_train)
-                x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
-                
-                model = Sequential()
-                model.add(LSTM(units=50, return_sequences=True, input_shape=(x_train.shape[1], 1)))
-                model.add(LSTM(units=50))
-                model.add(Dense(1))
-                model.compile(optimizer='adam', loss='mean_squared_error')
-                model.fit(x_train, y_train, epochs=1, batch_size=1, verbose=0)
-                
-                # 4. Predict
-                last_days = scaled_data[-days_lookback:]
-                x_test = np.reshape(last_days, (1, days_lookback, 1))
-                predicted_price = scaler.inverse_transform(model.predict(x_test))
-                
-                # 5. Display with Date
-                st.success(f"🧠 LSTM Prediction for {formatted_date}: ₹{predicted_price[0][0]:.2f}")
-# --- PAGE 3: PORTFOLIO ---
-elif page == "⚖️ Portfolio Opt.":
-    st.title("⚖️ Portfolio Optimization")
+            if model_type == "LSTM (Deep Learning)":
+                with st.spinner("Training Neural Network..."):
+                    data = subset['Close'].values.reshape(-1, 1)
+                    scaler = MinMaxScaler(feature_range=(0, 1))
+                    scaled_data = scaler.fit_transform(data)
+                    
+                    x_train, y_train = [], []
+                    for i in range(days_lookback, len(scaled_data)):
+                        x_train.append(scaled_data[i-days_lookback:i, 0])
+                        y_train.append(scaled_data[i, 0])
+                    
+                    x_train, y_train = np.array(x_train), np.array(y_train)
+                    x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+                    
+                    model = Sequential()
+                    model.add(LSTM(units=50, return_sequences=True, input_shape=(x_train.shape[1], 1)))
+                    model.add(LSTM(units=50))
+                    model.add(Dense(1))
+                    model.compile(optimizer='adam', loss='mean_squared_error')
+                    model.fit(x_train, y_train, epochs=1, batch_size=1, verbose=0)
+                    
+                    last_days = scaled_data[-days_lookback:]
+                    x_test = np.reshape(last_days, (1, days_lookback, 1))
+                    predicted_price = scaler.inverse_transform(model.predict(x_test))
+                    
+                    st.success(f"🧠 LSTM Prediction for {formatted_date}: ₹{predicted_price[0][0]:.2f}")
+            
+            else: # ARIMA
+                with st.spinner("Running ARIMA..."):
+                    model = ARIMA(subset['Close'], order=(5,1,0))
+                    model_fit = model.fit()
+                    forecast = model_fit.forecast(steps=1)
+                    st.info(f"📈 ARIMA Forecast for {formatted_date}: ₹{forecast.iloc[0]:.2f}")
+
+# --- PAGE 3: PHASE B (PORTFOLIO) ---
+elif page == "⚖️ Phase B: Portfolio Opt.":
+    st.title("⚖️ Phase B: Portfolio Optimization")
     
     valid_tickers = sorted(price_df['Ticker'].unique())
     selected_tickers = st.multiselect("Select Stocks (Min 3)", valid_tickers)
     
     if len(selected_tickers) >= 3:
-        if st.button("Optimize"):
+        if st.button("Optimize Portfolio"):
             df_pivot = price_df.pivot(index='Date', columns='Ticker', values='Close')[selected_tickers].dropna()
             
             if df_pivot.empty:
-                st.error("No overlapping data found for these stocks.")
+                st.error("No overlapping data found.")
             else:
                 returns = df_pivot.pct_change().mean() * 252
                 cov = df_pivot.pct_change().cov() * 252
@@ -224,7 +188,12 @@ elif page == "⚖️ Portfolio Opt.":
                 
                 result = minimize(neg_sharpe, init_guess, bounds=bounds, constraints=constraints)
                 
-                st.subheader("Recommended Allocation")
+                st.subheader("🏆 Optimal Allocation (Max Sharpe)")
                 alloc = pd.DataFrame({'Stock': selected_tickers, 'Weight': result.x})
                 alloc['Weight'] = alloc['Weight'].apply(lambda x: f"{x*100:.1f}%")
-                st.table(alloc)
+                
+                c1, c2 = st.columns(2)
+                with c1: st.table(alloc)
+                with c2: 
+                    fig = px.pie(values=result.x, names=selected_tickers, title="Portfolio Allocation")
+                    st.plotly_chart(fig, use_container_width=True)
