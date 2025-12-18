@@ -1,106 +1,132 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from statsmodels.tsa.arima.model import ARIMA
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from scipy.optimize import minimize
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Wide Moat Dashboard", layout="wide")
+st.set_page_config(page_title="Wide Moat AI Dashboard", layout="wide")
 
 # --- 1. LOAD DATA ---
 @st.cache_data
 def load_data():
-    # Load the 3 files
-    scores_df = pd.read_csv("scores.csv")
-    fund_df = pd.read_csv("fundamentals.csv")
-    price_df = pd.read_csv("price_data.csv")
+    scores = pd.read_csv("scores.csv")
+    fund = pd.read_csv("fundamentals.csv")
+    price = pd.read_csv("price_data.csv")
 
-    # Fix Dates
-    fund_df['Date'] = pd.to_datetime(fund_df['Date'])
-    price_df['Date'] = pd.to_datetime(price_df['Date'])
+    fund['Date'] = pd.to_datetime(fund['Date'])
+    price['Date'] = pd.to_datetime(price['Date'])
     
-    # Handle the specific column names from your file
-    # If your file has 'NetProfit', we standardise it for the app
-    if 'NetProfit' in fund_df.columns:
-        fund_df.rename(columns={'NetProfit': 'Net profit'}, inplace=True)
-    if 'Equity' in fund_df.columns:
-        fund_df.rename(columns={'Equity': 'Equity Share Capital'}, inplace=True)
+    # Fix Column Names
+    if 'NetProfit' in fund.columns: fund.rename(columns={'NetProfit': 'Net profit'}, inplace=True)
+    if 'Equity' in fund.columns: fund.rename(columns={'Equity': 'Equity Share Capital'}, inplace=True)
 
-    return scores_df, fund_df, price_df
+    return scores, fund, price
 
 try:
-    scores, fundamentals, prices = load_data()
+    scores_df, fund_df, price_df = load_data()
 except FileNotFoundError:
-    st.error("❌ Files not found! Please make sure 'scores.csv', 'fundamentals.csv', and 'price_data.csv' are in the same folder as this script.")
+    st.error("❌ Data files not found!")
     st.stop()
 
-# --- 2. SIDEBAR (User Input) ---
-st.sidebar.title("🔍 Stock Screener")
+# --- SIDEBAR ---
+st.sidebar.title("🚀 Navigation")
+page = st.sidebar.radio("Go to", ["📊 Executive Dashboard", "🔮 AI Forecasting (LSTM)", "⚖️ Portfolio Opt."])
 
-# Filter: Show only stocks with a specific minimum score?
-min_score = st.sidebar.slider("Minimum Moat Score", 0, 100, 50)
-filtered_stocks = scores[scores['Moat_Score'] >= min_score]['Ticker'].unique()
-
-# Dropdown to select company
-selected_ticker = st.sidebar.selectbox("Select a Company", filtered_stocks)
-
-# Get data for selected company
-company_score = scores[scores['Ticker'] == selected_ticker]['Moat_Score'].values[0]
-company_fund = fundamentals[fundamentals['Ticker'] == selected_ticker].sort_values('Date')
-company_price = prices[prices['Ticker'] == selected_ticker].sort_values('Date')
-
-# --- 3. MAIN DASHBOARD ---
-st.title(f"📊 {selected_ticker} Analysis")
-
-# Top Row: Score & Stats
-col1, col2, col3 = st.columns(3)
-with col1:
-    color = "green" if company_score >= 75 else "orange" if company_score >= 50 else "red"
-    st.markdown(f"### Moat Score: :{color}[{company_score}/100]")
-with col2:
-    if not company_price.empty:
-        latest_price = company_price.iloc[-1]['Close']
-        st.metric("Latest Price", f"₹{latest_price:,.2f}")
-with col3:
-    if not company_fund.empty:
-        latest_sales = company_fund.iloc[-1]['Sales']
-        st.metric("Latest Annual Sales", f"₹{latest_sales:,.2f} Cr")
-
-st.markdown("---")
-
-# Row 2: Stock Price Chart
-st.subheader("📈 10-Year Price Trend")
-if not company_price.empty:
-    fig_price = px.line(company_price, x='Date', y='Close', title=f"{selected_ticker} Share Price")
-    st.plotly_chart(fig_price, use_container_width=True)
-else:
-    st.warning("No price data available for this company.")
-
-# Row 3: Fundamental Charts (Sales vs Profit)
-st.subheader("🏢 Fundamental Growth")
-if not company_fund.empty:
-    tab1, tab2 = st.tabs(["Sales vs Profit", "Debt Profile"])
+# --- PAGE 1: EXECUTIVE DASHBOARD ---
+if page == "📊 Executive Dashboard":
+    st.title("📊 Wide Moat Executive Summary")
     
-    with tab1:
-        # Dual Axis Chart for Sales & Profit
-        fig_fund = go.Figure()
-        fig_fund.add_trace(go.Bar(x=company_fund['Date'], y=company_fund['Sales'], name='Sales', marker_color='blue'))
-        fig_fund.add_trace(go.Scatter(x=company_fund['Date'], y=company_fund['Net profit'], name='Net Profit', yaxis='y2', line=dict(color='green', width=3)))
-        
-        fig_fund.update_layout(
-            title="Sales (Bar) vs Net Profit (Line)",
-            yaxis=dict(title="Sales (Cr)"),
-            yaxis2=dict(title="Net Profit (Cr)", overlaying='y', side='right')
-        )
-        st.plotly_chart(fig_fund, use_container_width=True)
-        
-    with tab2:
-        # Debt vs Equity
-        fig_debt = px.bar(company_fund, x='Date', y=['Borrowings', 'Equity Share Capital', 'Reserves'], 
-                          title="Capital Structure (Debt vs Equity)", barmode='stack')
-        st.plotly_chart(fig_debt, use_container_width=True)
-else:
-    st.warning("No fundamental data available.")
+    # Select Company
+    tickers = scores_df['Ticker'].unique()
+    selected_ticker = st.selectbox("Select Company", tickers)
+    
+    # Get Data
+    subset_price = price_df[price_df['Ticker'] == selected_ticker].sort_values('Date')
+    subset_fund = fund_df[fund_df['Ticker'] == selected_ticker].sort_values('Date')
 
-# --- 4. SHOW RAW DATA ---
-with st.expander("View Raw Data"):
-    st.write("Fundamental Data:", company_fund)
+    # Metrics
+    c1, c2, c3 = st.columns(3)
+    score = scores_df[scores_df['Ticker'] == selected_ticker]['Moat_Score'].values[0]
+    c1.metric("Moat Score", f"{score}/100")
+    c2.metric("Latest Price", f"₹{subset_price.iloc[-1]['Close']:.2f}")
+    c3.metric("Sales Growth", "Analyzing...")
+
+    # Chart
+    st.subheader("📈 Price History")
+    fig = px.line(subset_price, x='Date', y='Close')
+    st.plotly_chart(fig, use_container_width=True)
+
+# --- PAGE 2: AI FORECASTING (LSTM) ---
+elif page == "🔮 AI Forecasting (LSTM)":
+    st.title("🔮 Deep Learning Price Forecast")
+    st.markdown("Using **TensorFlow & Keras (LSTM)** to predict future trends.")
+    
+    ticker = st.selectbox("Select Stock", price_df['Ticker'].unique())
+    days_lookback = st.slider("Training Lookback Days", 30, 365, 60)
+    
+    if st.button("Train LSTM Model"):
+        with st.spinner("Training Neural Network... (This may take a moment)"):
+            # Prepare Data
+            data = price_df[price_df['Ticker'] == ticker].sort_values('Date')['Close'].values.reshape(-1, 1)
+            scaler = MinMaxScaler(feature_range=(0, 1))
+            scaled_data = scaler.fit_transform(data)
+            
+            x_train, y_train = [], []
+            for i in range(days_lookback, len(scaled_data)):
+                x_train.append(scaled_data[i-days_lookback:i, 0])
+                y_train.append(scaled_data[i, 0])
+            
+            x_train, y_train = np.array(x_train), np.array(y_train)
+            x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+            
+            # Build LSTM Model (Keras/TensorFlow)
+            model = Sequential()
+            model.add(LSTM(units=50, return_sequences=True, input_shape=(x_train.shape[1], 1)))
+            model.add(LSTM(units=50))
+            model.add(Dense(1))
+            model.compile(optimizer='adam', loss='mean_squared_error')
+            
+            # Train
+            model.fit(x_train, y_train, epochs=1, batch_size=1, verbose=0)
+            
+            # Predict Next Day
+            last_days = scaled_data[-days_lookback:]
+            x_test = np.reshape(last_days, (1, days_lookback, 1))
+            predicted_price = scaler.inverse_transform(model.predict(x_test))
+            
+            st.success(f"🧠 LSTM Prediction for Tomorrow: ₹{predicted_price[0][0]:.2f}")
+            st.info("Note: This model was trained on-the-fly. For higher accuracy, increase epochs in code.")
+
+# --- PAGE 3: PORTFOLIO ---
+elif page == "⚖️ Portfolio Opt.":
+    st.title("⚖️ Portfolio Optimization")
+    st.write("Using **SciPy & Markowitz Theory** to find optimal weights.")
+    
+    selected_tickers = st.multiselect("Select Stocks (Min 3)", price_df['Ticker'].unique())
+    
+    if len(selected_tickers) >= 3:
+        if st.button("Optimize"):
+            df_pivot = price_df.pivot(index='Date', columns='Ticker', values='Close')[selected_tickers].dropna()
+            returns = df_pivot.pct_change().mean() * 252
+            cov = df_pivot.pct_change().cov() * 252
+            
+            def neg_sharpe(weights):
+                p_ret = np.sum(returns * weights)
+                p_vol = np.sqrt(np.dot(weights.T, np.dot(cov, weights)))
+                return -(p_ret / p_vol)
+            
+            bounds = tuple((0, 1) for _ in range(len(selected_tickers)))
+            constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+            init_guess = [1/len(selected_tickers)] * len(selected_tickers)
+            
+            result = minimize(neg_sharpe, init_guess, bounds=bounds, constraints=constraints)
+            
+            st.subheader("Recommended Allocation")
+            alloc = pd.DataFrame({'Stock': selected_tickers, 'Weight': result.x})
+            st.bar_chart(alloc.set_index('Stock'))
