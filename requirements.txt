@@ -1,3 +1,11 @@
 streamlit
 pandas
 plotly
+numpy
+scipy
+scikit-learn
+statsmodels
+arch
+tensorflow
+PyPortfolioOpt
+matplotlib
