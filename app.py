@@ -15,7 +15,7 @@ from arch import arch_model
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Gramdev AI Dashboard", layout="wide")
 
-# --- 1. MAPPING DICTIONARY ---
+# --- 1. EXPANDED MAPPING DICTIONARY (Fixes BLS, Apar, Ashoka, etc.) ---
 TICKER_MAP = {
     "Action": "ACE", "Bharat": "BEL", "Blue_Star": "BLUESTARCO", "Caplin": "CAPLIPOINT",
     "C_D_S_L": "CDSL", "Dr_Lal": "LALPATHLAB", "Dynacons": "DYNPRO", "Dynamic": "DYCL",
@@ -28,13 +28,23 @@ TICKER_MAP = {
     "Schaeffler": "SCHAEFFLER", "Shakti": "SHAKTIPUMP", "Shanthi": "SHANTIGEAR",
     "Sharda": "SHARDAMOTR", "Shilchar": "SHILCHAR", "Sika": "SIKA", "Solar": "SOLARINDS",
     "Stylam": "STYLAMIND", "Swaraj": "SWARAJENG", "Tanfac": "Tanfac_Inds", "Tata": "TATAELXSI",
-    "Timex": "TIMEX", "Voltamp": "VOLTAMP"
+    "Timex": "TIMEX", "Voltamp": "VOLTAMP", 
+    # NEW FIXES ADDED HERE:
+    "BLS": "BLS", "Apar": "APARINDS", "Ashoka": "ASHOKA", "Astrazeneca": "ASTRAZEN", 
+    "BSE": "BSE", "Cams": "CAMS", "3B": "3B_Blackbio"
 }
 
 def normalize_ticker(name):
+    # 1. Check if name is already a valid value (e.g. "BLS")
     if name in TICKER_MAP.values(): return name
+    
+    # 2. Check for substring matches from the Map
+    name_upper = name.upper()
     for key, value in TICKER_MAP.items():
-        if key.upper() in name.upper(): return value
+        if key.upper() in name_upper:
+            return value
+            
+    # 3. Fallback: Return original
     return name
 
 # --- 2. LOAD DATA ---
@@ -45,6 +55,7 @@ def load_data():
         fund = pd.read_csv("fundamentals.csv")
         price = pd.read_csv("price_data.csv")
         
+        # Apply normalization to fix names like 'BLS_Internat' -> 'BLS'
         scores['Ticker'] = scores['Ticker'].apply(normalize_ticker)
         fund['Ticker'] = fund['Ticker'].apply(normalize_ticker)
         
@@ -68,12 +79,22 @@ page = st.sidebar.radio("Go to", ["📊 Executive Dashboard", "🔮 Phase A: AI 
 # --- PAGE 1: DASHBOARD ---
 if page == "📊 Executive Dashboard":
     st.title("📊 Executive Summary")
-    ticker = st.selectbox("Select Company", scores_df['Ticker'].unique())
+    # Filter tickers to only show ones we have price data for
+    valid_tickers = sorted(price_df['Ticker'].unique())
+    # Try to find intersection between Scores and Price
+    common_tickers = [t for t in scores_df['Ticker'].unique() if t in valid_tickers]
+    
+    if not common_tickers:
+        st.error("No matching tickers found between Scores and Price data. Check TICKER_MAP.")
+        st.stop()
+        
+    ticker = st.selectbox("Select Company", common_tickers)
     
     sub_p = price_df[price_df['Ticker'] == ticker].sort_values('Date')
     sub_f = fund_df[fund_df['Ticker'] == ticker].sort_values('Date')
     
-    score = scores_df[scores_df['Ticker'] == ticker]['Moat_Score'].values[0]
+    score_rows = scores_df[scores_df['Ticker'] == ticker]
+    score = score_rows['Moat_Score'].values[0] if not score_rows.empty else "N/A"
     
     c1, c2, c3 = st.columns(3)
     c1.metric("Moat Score", f"{score}/100")
@@ -82,7 +103,9 @@ if page == "📊 Executive Dashboard":
     c3.metric("Latest Sales", f"₹{sub_f.iloc[-1][col]:,.2f} Cr" if not sub_f.empty else "N/A")
     
     if not sub_p.empty:
-        st.plotly_chart(px.line(sub_p, x='Date', y='Close', title="Price History"), use_container_width=True)
+        st.plotly_chart(px.line(sub_p, x='Date', y='Close', title=f"{ticker} Price History"), use_container_width=True)
+    else:
+        st.warning(f"No price data for {ticker}. Check spelling in TICKER_MAP.")
 
 # --- PAGE 2: FORECASTING (PHASE A) ---
 elif page == "🔮 Phase A: AI Forecasting":
@@ -144,10 +167,11 @@ elif page == "🔮 Phase A: AI Forecasting":
 
         elif analysis_type == "ARIMA Trend":
             st.subheader("📈 ARIMA Trend Model")
-            model = ARIMA(subset['Close'], order=(5,1,0))
-            fit = model.fit()
-            forecast = fit.forecast(steps=1).iloc[0]
-            st.info(f"ARIMA Forecast for {date_str}: ₹{forecast:.2f}")
+            if st.button("Run ARIMA"):
+                model = ARIMA(subset['Close'], order=(5,1,0))
+                fit = model.fit()
+                forecast = fit.forecast(steps=1).iloc[0]
+                st.info(f"ARIMA Forecast for {date_str}: ₹{forecast:.2f}")
 
 # --- PAGE 3: PORTFOLIO (PHASE B) ---
 elif page == "⚖️ Phase B: Portfolio Mgmt":
@@ -160,51 +184,57 @@ elif page == "⚖️ Phase B: Portfolio Mgmt":
         st.warning("Select at least 3 stocks.")
     else:
         pivot = price_df.pivot(index='Date', columns='Ticker', values='Close')[selection].dropna()
-        returns = pivot.pct_change().dropna()
-        
-        tab1, tab2, tab3 = st.tabs(["Clustering (K-Means)", "PCA Factors", "Optimization"])
-        
-        with tab1:
-            st.subheader("🧬 Stock Clustering")
-            st.write("Grouping stocks based on movement similarity.")
-            k = st.slider("Number of Clusters", 2, 5, 3)
+        if pivot.empty:
+            st.error("No overlapping data found. Try different stocks.")
+        else:
+            returns = pivot.pct_change().dropna()
             
-            # Cluster based on correlation
-            corr = returns.corr()
-            kmeans = KMeans(n_clusters=k, random_state=42)
-            kmeans.fit(corr)
+            tab1, tab2, tab3 = st.tabs(["Clustering (K-Means)", "PCA Factors", "Optimization"])
             
-            cluster_df = pd.DataFrame({'Ticker': selection, 'Cluster': kmeans.labels_})
-            st.table(cluster_df.sort_values('Cluster'))
-            
-        with tab2:
-            st.subheader("🧩 PCA Analysis")
-            pca = PCA(n_components=3)
-            pca.fit(returns)
-            expl = pca.explained_variance_ratio_
-            st.write(f"Factor 1 explains {expl[0]*100:.1f}% of variance (Market Risk).")
-            st.bar_chart(expl)
-            
-        with tab3:
-            st.subheader("🏆 Markowitz Optimization")
-            if st.button("Optimize Weights"):
-                mu = returns.mean() * 252
-                cov = returns.cov() * 252
+            with tab1:
+                st.subheader("🧬 Stock Clustering")
+                st.write("Grouping stocks based on movement similarity.")
+                k = st.slider("Number of Clusters", 2, 5, 3)
                 
-                def neg_sharpe(w):
-                    ret = np.sum(mu * w)
-                    vol = np.sqrt(np.dot(w.T, np.dot(cov, w)))
-                    return -(ret/vol)
+                # Cluster based on correlation
+                corr = returns.corr()
+                kmeans = KMeans(n_clusters=k, random_state=42)
+                kmeans.fit(corr)
                 
-                cons = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-                bounds = tuple((0, 1) for _ in range(len(selection)))
-                init = [1/len(selection)]*len(selection)
+                cluster_df = pd.DataFrame({'Ticker': selection, 'Cluster': kmeans.labels_})
+                st.table(cluster_df.sort_values('Cluster'))
                 
-                res = minimize(neg_sharpe, init, bounds=bounds, constraints=cons)
+            with tab2:
+                st.subheader("🧩 PCA Analysis")
+                if len(selection) < 3:
+                    st.warning("Need at least 3 stocks for PCA.")
+                else:
+                    pca = PCA(n_components=3)
+                    pca.fit(returns)
+                    expl = pca.explained_variance_ratio_
+                    st.write(f"Factor 1 explains {expl[0]*100:.1f}% of variance (Market Risk).")
+                    st.bar_chart(expl)
                 
-                res_df = pd.DataFrame({'Stock': selection, 'Weight': res.x})
-                res_df['Weight'] = res_df['Weight'].apply(lambda x: f"{x*100:.1f}%")
-                
-                c1, c2 = st.columns(2)
-                with c1: st.table(res_df)
-                with c2: st.plotly_chart(px.pie(values=res.x, names=selection, title="Optimal Allocation"))
+            with tab3:
+                st.subheader("🏆 Markowitz Optimization")
+                if st.button("Optimize Weights"):
+                    mu = returns.mean() * 252
+                    cov = returns.cov() * 252
+                    
+                    def neg_sharpe(w):
+                        ret = np.sum(mu * w)
+                        vol = np.sqrt(np.dot(w.T, np.dot(cov, w)))
+                        return -(ret/vol)
+                    
+                    cons = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+                    bounds = tuple((0, 1) for _ in range(len(selection)))
+                    init = [1/len(selection)]*len(selection)
+                    
+                    res = minimize(neg_sharpe, init, bounds=bounds, constraints=cons)
+                    
+                    res_df = pd.DataFrame({'Stock': selection, 'Weight': res.x})
+                    res_df['Weight'] = res_df['Weight'].apply(lambda x: f"{x*100:.1f}%")
+                    
+                    c1, c2 = st.columns(2)
+                    with c1: st.table(res_df)
+                    with c2: st.plotly_chart(px.pie(values=res.x, names=selection, title="Optimal Allocation"))
