@@ -4,15 +4,18 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
 from scipy.optimize import minimize
 from statsmodels.tsa.arima.model import ARIMA
+from arch import arch_model
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Wide Moat AI Dashboard", layout="wide")
+st.set_page_config(page_title="Gramdev AI Dashboard", layout="wide")
 
-# --- 1. MAPPING DICTIONARY ( The Fix for Ticker Mismatch ) ---
+# --- 1. MAPPING DICTIONARY ---
 TICKER_MAP = {
     "Action": "ACE", "Bharat": "BEL", "Blue_Star": "BLUESTARCO", "Caplin": "CAPLIPOINT",
     "C_D_S_L": "CDSL", "Dr_Lal": "LALPATHLAB", "Dynacons": "DYNPRO", "Dynamic": "DYCL",
@@ -30,10 +33,8 @@ TICKER_MAP = {
 
 def normalize_ticker(name):
     if name in TICKER_MAP.values(): return name
-    name_upper = name.upper()
     for key, value in TICKER_MAP.items():
-        if key.upper() in name_upper:
-            return value
+        if key.upper() in name.upper(): return value
     return name
 
 # --- 2. LOAD DATA ---
@@ -43,157 +44,167 @@ def load_data():
         scores = pd.read_csv("scores.csv")
         fund = pd.read_csv("fundamentals.csv")
         price = pd.read_csv("price_data.csv")
-
-        # FIX: Apply the name correction
+        
         scores['Ticker'] = scores['Ticker'].apply(normalize_ticker)
         fund['Ticker'] = fund['Ticker'].apply(normalize_ticker)
-
+        
         fund['Date'] = pd.to_datetime(fund['Date'])
         price['Date'] = pd.to_datetime(price['Date'])
         
         if 'NetProfit' in fund.columns: fund.rename(columns={'NetProfit': 'Net profit'}, inplace=True)
         if 'Equity' in fund.columns: fund.rename(columns={'Equity': 'Equity Share Capital'}, inplace=True)
-
+        
         return scores, fund, price
     except FileNotFoundError:
         return None, None, None
 
 scores_df, fund_df, price_df = load_data()
-
-if scores_df is None:
-    st.error("❌ Critical Error: Data files not found.")
-    st.stop()
+if scores_df is None: st.stop()
 
 # --- SIDEBAR ---
-st.sidebar.title("🚀 Navigation")
-page = st.sidebar.radio("Go to", ["📊 Executive Dashboard", "🔮 Phase A: AI Forecasting", "⚖️ Phase B: Portfolio Opt."])
+st.sidebar.title("🚀 Gramdev Analysis")
+page = st.sidebar.radio("Go to", ["📊 Executive Dashboard", "🔮 Phase A: AI Forecasting", "⚖️ Phase B: Portfolio Mgmt"])
 
-# --- PAGE 1: EXECUTIVE DASHBOARD ---
+# --- PAGE 1: DASHBOARD ---
 if page == "📊 Executive Dashboard":
-    st.title("📊 Wide Moat Executive Summary")
+    st.title("📊 Executive Summary")
+    ticker = st.selectbox("Select Company", scores_df['Ticker'].unique())
     
-    tickers = scores_df['Ticker'].unique()
-    selected_ticker = st.selectbox("Select Company", tickers)
+    sub_p = price_df[price_df['Ticker'] == ticker].sort_values('Date')
+    sub_f = fund_df[fund_df['Ticker'] == ticker].sort_values('Date')
     
-    subset_price = price_df[price_df['Ticker'] == selected_ticker].sort_values('Date')
-    subset_fund = fund_df[fund_df['Ticker'] == selected_ticker].sort_values('Date')
-
+    score = scores_df[scores_df['Ticker'] == ticker]['Moat_Score'].values[0]
+    
     c1, c2, c3 = st.columns(3)
+    c1.metric("Moat Score", f"{score}/100")
+    c2.metric("Latest Price", f"₹{sub_p.iloc[-1]['Close']:,.2f}" if not sub_p.empty else "N/A")
+    col = 'Sales' if 'Sales' in sub_f.columns else sub_f.columns[2]
+    c3.metric("Latest Sales", f"₹{sub_f.iloc[-1][col]:,.2f} Cr" if not sub_f.empty else "N/A")
     
-    # Score
-    score_rows = scores_df[scores_df['Ticker'] == selected_ticker]
-    score = score_rows['Moat_Score'].values[0] if not score_rows.empty else "N/A"
-    c1.metric("Moat Score", f"{score}/100" if score != "N/A" else "N/A")
-    
-    # Price
-    if not subset_price.empty:
-        c2.metric("Latest Price", f"₹{subset_price.iloc[-1]['Close']:,.2f}")
-    else:
-        c2.metric("Latest Price", "No Data")
+    if not sub_p.empty:
+        st.plotly_chart(px.line(sub_p, x='Date', y='Close', title="Price History"), use_container_width=True)
 
-    # Sales
-    if not subset_fund.empty:
-        col = 'Sales' if 'Sales' in subset_fund.columns else subset_fund.columns[2]
-        c3.metric("Latest Sales", f"₹{subset_fund.iloc[-1][col]:,.2f} Cr")
-    else:
-        c3.metric("Latest Sales", "No Data")
-
-    st.subheader("📈 Price History")
-    if not subset_price.empty:
-        fig = px.line(subset_price, x='Date', y='Close')
-        st.plotly_chart(fig, use_container_width=True)
-
-# --- PAGE 2: PHASE A (FORECASTING) ---
+# --- PAGE 2: FORECASTING (PHASE A) ---
 elif page == "🔮 Phase A: AI Forecasting":
-    st.title("🔮 Phase A: Deep Learning Forecast")
+    st.title("🔮 Phase A: Advanced Forecasting")
     
-    valid_tickers = sorted(price_df['Ticker'].unique())
-    ticker = st.selectbox("Select Stock", valid_tickers)
+    ticker = st.selectbox("Select Stock", sorted(price_df['Ticker'].unique()))
+    analysis_type = st.radio("Select Analysis Module", ["LSTM Price Forecast", "GARCH Volatility Risk", "ARIMA Trend"])
     
-    model_type = st.radio("Select Model", ["LSTM (Deep Learning)", "ARIMA (Statistical)"])
-    days_lookback = st.slider("Training Lookback Days", 30, 365, 60)
+    subset = price_df[price_df['Ticker'] == ticker].sort_values('Date')
     
-    if st.button("Run Forecast"):
-        subset = price_df[price_df['Ticker'] == ticker].sort_values('Date')
-        
-        if len(subset) < days_lookback + 10:
-            st.error("Not enough data to train.")
-        else:
-            # Calculate Next Date
-            last_date = subset['Date'].iloc[-1]
-            next_date = last_date + pd.Timedelta(days=1)
-            if next_date.weekday() == 5: next_date += pd.Timedelta(days=2)
-            elif next_date.weekday() == 6: next_date += pd.Timedelta(days=1)
-            formatted_date = next_date.strftime("%d %b %Y")
+    if len(subset) < 60:
+        st.error("Insufficient data for AI analysis.")
+    else:
+        # Date Logic
+        last_date = subset['Date'].iloc[-1]
+        next_date = last_date + pd.Timedelta(days=1)
+        if next_date.weekday() == 5: next_date += pd.Timedelta(days=2)
+        elif next_date.weekday() == 6: next_date += pd.Timedelta(days=1)
+        date_str = next_date.strftime("%d %b %Y")
 
-            if model_type == "LSTM (Deep Learning)":
-                with st.spinner("Training Neural Network..."):
+        if analysis_type == "LSTM Price Forecast":
+            st.subheader("🧠 Deep Learning (LSTM)")
+            if st.button("Run Neural Network"):
+                with st.spinner("Training Brain..."):
                     data = subset['Close'].values.reshape(-1, 1)
                     scaler = MinMaxScaler(feature_range=(0, 1))
-                    scaled_data = scaler.fit_transform(data)
+                    scaled = scaler.fit_transform(data)
                     
-                    x_train, y_train = [], []
-                    for i in range(days_lookback, len(scaled_data)):
-                        x_train.append(scaled_data[i-days_lookback:i, 0])
-                        y_train.append(scaled_data[i, 0])
-                    
-                    x_train, y_train = np.array(x_train), np.array(y_train)
-                    x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+                    X, y = [], []
+                    lookback = 60
+                    for i in range(lookback, len(scaled)):
+                        X.append(scaled[i-lookback:i, 0])
+                        y.append(scaled[i, 0])
+                    X, y = np.array(X), np.array(y)
+                    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
                     
                     model = Sequential()
-                    model.add(LSTM(units=50, return_sequences=True, input_shape=(x_train.shape[1], 1)))
-                    model.add(LSTM(units=50))
+                    model.add(LSTM(50, return_sequences=True, input_shape=(X.shape[1], 1)))
+                    model.add(LSTM(50))
                     model.add(Dense(1))
-                    model.compile(optimizer='adam', loss='mean_squared_error')
-                    model.fit(x_train, y_train, epochs=1, batch_size=1, verbose=0)
+                    model.compile(optimizer='adam', loss='mse')
+                    model.fit(X, y, epochs=1, batch_size=1, verbose=0)
                     
-                    last_days = scaled_data[-days_lookback:]
-                    x_test = np.reshape(last_days, (1, days_lookback, 1))
-                    predicted_price = scaler.inverse_transform(model.predict(x_test))
+                    last_60 = scaled[-lookback:].reshape(1, lookback, 1)
+                    pred = scaler.inverse_transform(model.predict(last_60))[0][0]
                     
-                    st.success(f"🧠 LSTM Prediction for {formatted_date}: ₹{predicted_price[0][0]:.2f}")
-            
-            else: # ARIMA
-                with st.spinner("Running ARIMA..."):
-                    model = ARIMA(subset['Close'], order=(5,1,0))
-                    model_fit = model.fit()
-                    forecast = model_fit.forecast(steps=1)
-                    st.info(f"📈 ARIMA Forecast for {formatted_date}: ₹{forecast.iloc[0]:.2f}")
+                    st.success(f"🤖 LSTM Prediction for {date_str}: ₹{pred:.2f}")
 
-# --- PAGE 3: PHASE B (PORTFOLIO) ---
-elif page == "⚖️ Phase B: Portfolio Opt.":
-    st.title("⚖️ Phase B: Portfolio Optimization")
+        elif analysis_type == "GARCH Volatility Risk":
+            st.subheader("⚠️ GARCH Volatility Model")
+            if st.button("Analyze Risk"):
+                returns = subset['Close'].pct_change().dropna() * 100
+                am = arch_model(returns, vol='Garch', p=1, q=1)
+                res = am.fit(disp='off')
+                st.write(res.summary())
+                vol = res.conditional_volatility.iloc[-1]
+                st.metric("Predicted Volatility (Risk)", f"{vol:.2f}%")
+                st.line_chart(res.conditional_volatility)
+
+        elif analysis_type == "ARIMA Trend":
+            st.subheader("📈 ARIMA Trend Model")
+            model = ARIMA(subset['Close'], order=(5,1,0))
+            fit = model.fit()
+            forecast = fit.forecast(steps=1).iloc[0]
+            st.info(f"ARIMA Forecast for {date_str}: ₹{forecast:.2f}")
+
+# --- PAGE 3: PORTFOLIO (PHASE B) ---
+elif page == "⚖️ Phase B: Portfolio Mgmt":
+    st.title("⚖️ Phase B: Portfolio Construction")
     
-    valid_tickers = sorted(price_df['Ticker'].unique())
-    selected_tickers = st.multiselect("Select Stocks (Min 3)", valid_tickers)
+    tickers = sorted(price_df['Ticker'].unique())
+    selection = st.multiselect("Select Stocks (Min 5 for Clustering)", tickers, default=tickers[:5])
     
-    if len(selected_tickers) >= 3:
-        if st.button("Optimize Portfolio"):
-            df_pivot = price_df.pivot(index='Date', columns='Ticker', values='Close')[selected_tickers].dropna()
+    if len(selection) < 3:
+        st.warning("Select at least 3 stocks.")
+    else:
+        pivot = price_df.pivot(index='Date', columns='Ticker', values='Close')[selection].dropna()
+        returns = pivot.pct_change().dropna()
+        
+        tab1, tab2, tab3 = st.tabs(["Clustering (K-Means)", "PCA Factors", "Optimization"])
+        
+        with tab1:
+            st.subheader("🧬 Stock Clustering")
+            st.write("Grouping stocks based on movement similarity.")
+            k = st.slider("Number of Clusters", 2, 5, 3)
             
-            if df_pivot.empty:
-                st.error("No overlapping data found.")
-            else:
-                returns = df_pivot.pct_change().mean() * 252
-                cov = df_pivot.pct_change().cov() * 252
+            # Cluster based on correlation
+            corr = returns.corr()
+            kmeans = KMeans(n_clusters=k, random_state=42)
+            kmeans.fit(corr)
+            
+            cluster_df = pd.DataFrame({'Ticker': selection, 'Cluster': kmeans.labels_})
+            st.table(cluster_df.sort_values('Cluster'))
+            
+        with tab2:
+            st.subheader("🧩 PCA Analysis")
+            pca = PCA(n_components=3)
+            pca.fit(returns)
+            expl = pca.explained_variance_ratio_
+            st.write(f"Factor 1 explains {expl[0]*100:.1f}% of variance (Market Risk).")
+            st.bar_chart(expl)
+            
+        with tab3:
+            st.subheader("🏆 Markowitz Optimization")
+            if st.button("Optimize Weights"):
+                mu = returns.mean() * 252
+                cov = returns.cov() * 252
                 
-                def neg_sharpe(weights):
-                    p_ret = np.sum(returns * weights)
-                    p_vol = np.sqrt(np.dot(weights.T, np.dot(cov, weights)))
-                    return -(p_ret / p_vol)
+                def neg_sharpe(w):
+                    ret = np.sum(mu * w)
+                    vol = np.sqrt(np.dot(w.T, np.dot(cov, w)))
+                    return -(ret/vol)
                 
-                bounds = tuple((0, 1) for _ in range(len(selected_tickers)))
-                constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-                init_guess = [1/len(selected_tickers)] * len(selected_tickers)
+                cons = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+                bounds = tuple((0, 1) for _ in range(len(selection)))
+                init = [1/len(selection)]*len(selection)
                 
-                result = minimize(neg_sharpe, init_guess, bounds=bounds, constraints=constraints)
+                res = minimize(neg_sharpe, init, bounds=bounds, constraints=cons)
                 
-                st.subheader("🏆 Optimal Allocation (Max Sharpe)")
-                alloc = pd.DataFrame({'Stock': selected_tickers, 'Weight': result.x})
-                alloc['Weight'] = alloc['Weight'].apply(lambda x: f"{x*100:.1f}%")
+                res_df = pd.DataFrame({'Stock': selection, 'Weight': res.x})
+                res_df['Weight'] = res_df['Weight'].apply(lambda x: f"{x*100:.1f}%")
                 
                 c1, c2 = st.columns(2)
-                with c1: st.table(alloc)
-                with c2: 
-                    fig = px.pie(values=result.x, names=selected_tickers, title="Portfolio Allocation")
-                    st.plotly_chart(fig, use_container_width=True)
+                with c1: st.table(res_df)
+                with c2: st.plotly_chart(px.pie(values=res.x, names=selection, title="Optimal Allocation"))
