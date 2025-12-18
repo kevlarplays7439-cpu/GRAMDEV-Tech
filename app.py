@@ -11,7 +11,38 @@ from scipy.optimize import minimize
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Wide Moat AI Dashboard", layout="wide")
 
-# --- 1. LOAD DATA ---
+# --- 1. MAPPING DICTIONARY ( The Fix for "Action_Const.Eq" ) ---
+# This maps the long names in your Scores file to the Tickers in your Price file.
+TICKER_MAP = {
+    "Action": "ACE", "Bharat": "BEL", "Blue_Star": "BLUESTARCO", "Caplin": "CAPLIPOINT",
+    "C_D_S_L": "CDSL", "Dr_Lal": "LALPATHLAB", "Dynacons": "DYNPRO", "Dynamic": "DYCL",
+    "Frontier": "Frontier_Springs", "Ganesh": "GANESHHOU", "HDFC": "HDFCAMC",
+    "I_R_C_T_C": "IRCTC", "Indiamart": "INDIAMART", "Indo_Tech": "INDOTECH",
+    "J_B_Chem": "JBCHEPHARM", "Jai_Balaji": "JAIBALAJI", "Jyoti": "JYOTIRES",
+    "KNR": "KNRCON", "Kingfa": "KINGFA", "Kirl": "KIRLPNU", "Macpower": "MACPOWER",
+    "Master": "MASTERTR", "Mazagon": "MAZDOCK", "Monarch": "MONARCH", "Newgen": "NEWGEN",
+    "Polycab": "POLYCAB", "Prec": "PRECWIRE", "RRP": "RRP_Defense", "Radhika": "RADHIKAJWE",
+    "Schaeffler": "SCHAEFFLER", "Shakti": "SHAKTIPUMP", "Shanthi": "SHANTIGEAR",
+    "Sharda": "SHARDAMOTR", "Shilchar": "SHILCHAR", "Sika": "SIKA", "Solar": "SOLARINDS",
+    "Stylam": "STYLAMIND", "Swaraj": "SWARAJENG", "Tanfac": "Tanfac_Inds", "Tata": "TATAELXSI",
+    "Timex": "TIMEX", "Voltamp": "VOLTAMP"
+}
+
+def normalize_ticker(name):
+    """Converts 'Action_Const.Eq' -> 'ACE' using the map."""
+    # 1. Direct match?
+    if name in TICKER_MAP.values(): return name
+    
+    # 2. Check keywords in the map
+    name_upper = name.upper()
+    for key, value in TICKER_MAP.items():
+        if key.upper() in name_upper:
+            return value
+            
+    # 3. Fallback: Return original
+    return name
+
+# --- 2. LOAD DATA ---
 @st.cache_data
 def load_data():
     try:
@@ -19,10 +50,13 @@ def load_data():
         fund = pd.read_csv("fundamentals.csv")
         price = pd.read_csv("price_data.csv")
 
+        # FIX: Apply the name correction to Scores and Fundamentals
+        scores['Ticker'] = scores['Ticker'].apply(normalize_ticker)
+        fund['Ticker'] = fund['Ticker'].apply(normalize_ticker)
+
         fund['Date'] = pd.to_datetime(fund['Date'])
         price['Date'] = pd.to_datetime(price['Date'])
         
-        # Standardize column names
         if 'NetProfit' in fund.columns: fund.rename(columns={'NetProfit': 'Net profit'}, inplace=True)
         if 'Equity' in fund.columns: fund.rename(columns={'Equity': 'Equity Share Capital'}, inplace=True)
 
@@ -33,7 +67,7 @@ def load_data():
 scores_df, fund_df, price_df = load_data()
 
 if scores_df is None:
-    st.error("❌ Critical Error: Data files not found. Please ensure scores.csv, fundamentals.csv, and price_data.csv are in the folder.")
+    st.error("❌ Critical Error: Data files not found.")
     st.stop()
 
 # --- SIDEBAR ---
@@ -52,27 +86,25 @@ if page == "📊 Executive Dashboard":
     subset_price = price_df[price_df['Ticker'] == selected_ticker].sort_values('Date')
     subset_fund = fund_df[fund_df['Ticker'] == selected_ticker].sort_values('Date')
 
-    # Metrics Row
+    # Metrics
     c1, c2, c3 = st.columns(3)
     
-    # Metric 1: Score
-    score_val = scores_df[scores_df['Ticker'] == selected_ticker]['Moat_Score'].values
-    score = score_val[0] if len(score_val) > 0 else "N/A"
+    # Score
+    score_rows = scores_df[scores_df['Ticker'] == selected_ticker]
+    score = score_rows['Moat_Score'].values[0] if not score_rows.empty else "N/A"
     c1.metric("Moat Score", f"{score}/100" if score != "N/A" else "N/A")
     
-    # Metric 2: Price (THE FIX IS HERE)
+    # Price
     if not subset_price.empty:
-        latest_price = subset_price.iloc[-1]['Close']
-        c2.metric("Latest Price", f"₹{latest_price:,.2f}")
+        c2.metric("Latest Price", f"₹{subset_price.iloc[-1]['Close']:,.2f}")
     else:
         c2.metric("Latest Price", "No Data")
-        
-    # Metric 3: Sales
+        st.warning(f"Could not find price data for '{selected_ticker}'. Check TICKER_MAP in code.")
+
+    # Sales
     if not subset_fund.empty:
-        # Check if 'Sales' column exists
-        col_name = 'Sales' if 'Sales' in subset_fund.columns else subset_fund.columns[2] # Fallback
-        latest_sales = subset_fund.iloc[-1][col_name]
-        c3.metric("Latest Sales", f"₹{latest_sales:,.2f} Cr")
+        col = 'Sales' if 'Sales' in subset_fund.columns else subset_fund.columns[2]
+        c3.metric("Latest Sales", f"₹{subset_fund.iloc[-1][col]:,.2f} Cr")
     else:
         c3.metric("Latest Sales", "No Data")
 
@@ -81,15 +113,13 @@ if page == "📊 Executive Dashboard":
     if not subset_price.empty:
         fig = px.line(subset_price, x='Date', y='Close')
         st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning(f"No price data found for {selected_ticker}. Please check if the ticker symbol matches in both CSV files.")
 
 # --- PAGE 2: AI FORECASTING (LSTM) ---
 elif page == "🔮 AI Forecasting (LSTM)":
     st.title("🔮 Deep Learning Price Forecast")
     
-    # Only show tickers that actually have price data
-    valid_tickers = price_df['Ticker'].unique()
+    # Only allow selecting tickers that HAVE price data
+    valid_tickers = sorted(price_df['Ticker'].unique())
     ticker = st.selectbox("Select Stock", valid_tickers)
     
     days_lookback = st.slider("Training Lookback Days", 30, 365, 60)
@@ -98,10 +128,9 @@ elif page == "🔮 AI Forecasting (LSTM)":
         subset = price_df[price_df['Ticker'] == ticker].sort_values('Date')
         
         if len(subset) < days_lookback + 10:
-            st.error(f"Not enough data to train (Need at least {days_lookback+10} days).")
+            st.error("Not enough data to train.")
         else:
             with st.spinner("Training Neural Network..."):
-                # Data Prep
                 data = subset['Close'].values.reshape(-1, 1)
                 scaler = MinMaxScaler(feature_range=(0, 1))
                 scaled_data = scaler.fit_transform(data)
@@ -114,7 +143,6 @@ elif page == "🔮 AI Forecasting (LSTM)":
                 x_train, y_train = np.array(x_train), np.array(y_train)
                 x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
                 
-                # Model
                 model = Sequential()
                 model.add(LSTM(units=50, return_sequences=True, input_shape=(x_train.shape[1], 1)))
                 model.add(LSTM(units=50))
@@ -122,7 +150,6 @@ elif page == "🔮 AI Forecasting (LSTM)":
                 model.compile(optimizer='adam', loss='mean_squared_error')
                 model.fit(x_train, y_train, epochs=1, batch_size=1, verbose=0)
                 
-                # Predict
                 last_days = scaled_data[-days_lookback:]
                 x_test = np.reshape(last_days, (1, days_lookback, 1))
                 predicted_price = scaler.inverse_transform(model.predict(x_test))
@@ -133,8 +160,7 @@ elif page == "🔮 AI Forecasting (LSTM)":
 elif page == "⚖️ Portfolio Opt.":
     st.title("⚖️ Portfolio Optimization")
     
-    # Filter for stocks that have data
-    valid_tickers = price_df['Ticker'].unique()
+    valid_tickers = sorted(price_df['Ticker'].unique())
     selected_tickers = st.multiselect("Select Stocks (Min 3)", valid_tickers)
     
     if len(selected_tickers) >= 3:
@@ -142,7 +168,7 @@ elif page == "⚖️ Portfolio Opt.":
             df_pivot = price_df.pivot(index='Date', columns='Ticker', values='Close')[selected_tickers].dropna()
             
             if df_pivot.empty:
-                 st.error("No overlapping dates found for selected stocks. Try picking different stocks.")
+                st.error("No overlapping data found for these stocks.")
             else:
                 returns = df_pivot.pct_change().mean() * 252
                 cov = df_pivot.pct_change().cov() * 252
