@@ -14,7 +14,7 @@ warnings.filterwarnings("ignore")
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Gramdev AI Dashboard", layout="wide")
 
-# --- 1. MAPPING DICTIONARY ---
+# --- 1. MAPPING DICTIONARY (Updated for 3B) ---
 YAHOO_MAP = {
     "Action": "ACE", "Bharat": "BEL", "Blue_Star": "BLUESTARCO", "Caplin": "CAPLIPOINT",
     "C_D_S_L": "CDSL", "Dr_Lal": "LALPATHLAB", "Dynacons": "DYNPRO", "Dynamic": "DYCL",
@@ -29,50 +29,52 @@ YAHOO_MAP = {
     "Stylam": "STYLAMIND", "Swaraj": "SWARAJENG", "Tanfac": "TANFACIND", "Tata": "TATAELXSI",
     "Timex": "TIMEX", "Voltamp": "VOLTAMP", 
     "BLS": "BLS", "Apar": "APARINDS", "Ashoka": "ASHOKA", "Astrazeneca": "ASTRAZEN", 
-    "BSE": "BSE", "Cams": "CAMS", "3B": "3BBLACKBIO"
+    "BSE": "BSE", "Cams": "CAMS", 
+    # SPECIFIC FIX FOR 3B BLACKBIO
+    "3B": "3BBLACKBIO", "3B_Blackbio": "3BBLACKBIO" 
 }
 
 def normalize_ticker(name):
+    # Try direct lookup
+    if name in YAHOO_MAP: return YAHOO_MAP[name]
+    # Try fuzzy lookup
     for key, value in YAHOO_MAP.items():
         if key.upper() in name.upper(): return value
     return name
 
-# --- 2. SMART LIVE DATA FETCHER (THE FIX) ---
+# --- 2. ROBUST DATA FETCHER ---
 def fetch_live_data_smart(ticker_base):
     """
-    Aggressively tries .NS, then .BO, then the raw symbol to find data.
+    Tries .NS, .BO, and raw. Returns data + status.
     """
-    # Remove any existing suffix to get a clean base
-    clean_base = ticker_base.replace(".NS", "").replace(".BO", "")
+    # Clean base (remove old suffixes if any)
+    clean = ticker_base.replace(".NS", "").replace(".BO", "")
     
-    # Priority list: NSE -> BSE -> Raw
-    attempts = [f"{clean_base}.NS", f"{clean_base}.BO", clean_base]
+    # Priority: NSE -> BSE -> Raw
+    attempts = [f"{clean}.NS", f"{clean}.BO", clean]
     
     for sym in attempts:
         try:
-            # Download
             df = yf.download(sym, period="3mo", progress=False)
-            
             if not df.empty:
-                # FIX: Handle MultiIndex columns (The #1 cause of 'No Data' errors)
+                # Fix Columns
                 df = df.reset_index()
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
                 
-                # Standardize columns
+                # Standardize
                 cols_map = {c: c.capitalize() for c in df.columns}
                 df.rename(columns=cols_map, inplace=True)
                 
-                # Ensure we have Date and Close
                 if 'Date' in df.columns and 'Close' in df.columns:
                     df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
                     return df, f"Success ({sym})"
         except:
             continue
             
-    return None, f"Failed to find data for {clean_base} (Tried NSE & BSE)"
+    return None, f"Failed for {clean}"
 
-# --- 3. LOAD CSV DATA ---
+# --- 3. LOAD DATA ---
 @st.cache_data
 def load_csvs():
     try:
@@ -96,7 +98,7 @@ def load_csvs():
 scores_df, fund_df, price_df = load_csvs()
 if scores_df is None: st.stop()
 
-# --- INIT SESSION STATE ---
+# --- INIT SESSION ---
 if 'live_data_cache' not in st.session_state:
     st.session_state['live_data_cache'] = {}
 
@@ -104,26 +106,31 @@ if 'live_data_cache' not in st.session_state:
 # 🚀 SIDEBAR CONTROLS
 # ==========================================
 st.sidebar.title("⚡ Gramdev Controls")
-
 page = st.sidebar.radio("Navigate", ["📊 Dashboard", "🔮 Forecasting", "⚖️ Portfolio"])
+
 st.sidebar.markdown("---")
 st.sidebar.header("🔴 Live Data Manager")
 
-# Global Selector
+# 1. Global Stock Selector
 valid_tickers = sorted(scores_df['Ticker'].unique())
 selected_ticker = st.sidebar.selectbox("Select Active Stock", valid_tickers)
 
-# Button
+# 2. Manual Override (The Fail-Safe)
+# If auto-detection fails, user can type "3BBLACKBIO.BO" here manually
+default_yahoo = YAHOO_MAP.get(selected_ticker, selected_ticker)
+manual_ticker = st.sidebar.text_input("Yahoo Symbol (Edit if failed)", default_yahoo)
+
+# 3. Fetch Button
 if st.sidebar.button("Fetch Live Data 🔄"):
-    with st.spinner(f"Hunting for data on {selected_ticker}..."):
-        # We pass the SIMPLE ticker (e.g., "BEL") and let the Smart Fetcher try .NS and .BO
-        live_data, status = fetch_live_data_smart(selected_ticker)
+    with st.spinner(f"Connecting to {manual_ticker}..."):
+        # Use the manual input directly
+        live_data, status = fetch_live_data_smart(manual_ticker)
         
         if live_data is not None:
             st.session_state['live_data_cache'][selected_ticker] = live_data
             st.sidebar.success(f"✅ {status}")
         else:
-            st.sidebar.error(f"❌ {status}")
+            st.sidebar.error(f"❌ {status} - Try typing symbol manually (e.g. 'RELIANCE.NS')")
 
 # ==========================================
 # 📄 MAIN APP LOGIC
@@ -134,7 +141,6 @@ static_data = price_df[price_df['Ticker'] == selected_ticker].sort_values('Date'
 
 if selected_ticker in st.session_state['live_data_cache']:
     live_part = st.session_state['live_data_cache'][selected_ticker]
-    # Merge
     live_part = live_part[['Date', 'Close', 'Open', 'High', 'Low', 'Volume']].copy()
     live_part['Ticker'] = selected_ticker
     
@@ -193,38 +199,3 @@ elif page == "🔮 Forecasting":
                 
                 last_60 = scaled[-lookback:].reshape(1, lookback, 1)
                 pred = scaler.inverse_transform(model.predict(last_60))[0][0]
-                
-                # Next Day Logic
-                last_dt = active_df['Date'].iloc[-1]
-                next_dt = last_dt + pd.Timedelta(days=1)
-                if next_dt.weekday() == 5: next_dt += pd.Timedelta(days=2)
-                elif next_dt.weekday() == 6: next_dt += pd.Timedelta(days=1)
-                
-                st.success(f"🧠 Forecast for {next_dt.strftime('%d-%b-%Y')}: ₹{pred:.2f}")
-
-# --- PAGE 3: PORTFOLIO ---
-elif page == "⚖️ Portfolio":
-    st.title("⚖️ Portfolio Optimization")
-    st.info("Uses CSV data for speed.")
-    
-    selection = st.multiselect("Select Stocks", valid_tickers, default=valid_tickers[:3])
-    
-    if len(selection) >= 3:
-        if st.button("Optimize"):
-            pivot = price_df.pivot(index='Date', columns='Ticker', values='Close')[selection].dropna()
-            returns = pivot.pct_change().dropna()
-            
-            mu = returns.mean() * 252
-            cov = returns.cov() * 252
-            cons = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-            bounds = tuple((0, 1) for _ in range(len(selection)))
-            init = [1/len(selection)]*len(selection)
-            
-            res = minimize(lambda w: -(np.sum(mu*w)/np.sqrt(np.dot(w.T,np.dot(cov,w)))), init, bounds=bounds, constraints=cons)
-            
-            df_res = pd.DataFrame({'Stock': selection, 'Weight': res.x})
-            df_res['Weight'] = df_res['Weight'].apply(lambda x: f"{x*100:.1f}%")
-            
-            c1, c2 = st.columns(2)
-            c1.table(df_res)
-            c2.plotly_chart(px.pie(values=res.x, names=selection, title="Allocation"))
