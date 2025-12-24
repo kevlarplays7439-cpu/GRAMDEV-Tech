@@ -4,12 +4,9 @@ import numpy as np
 import plotly.express as px
 import yfinance as yf
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
 from scipy.optimize import minimize
-from statsmodels.tsa.arima.model import ARIMA
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -19,44 +16,63 @@ st.set_page_config(page_title="Gramdev AI Dashboard", layout="wide")
 
 # --- 1. MAPPING DICTIONARY ---
 YAHOO_MAP = {
-    "Action": "ACE.NS", "Bharat": "BEL.NS", "Blue_Star": "BLUESTARCO.NS", "Caplin": "CAPLIPOINT.NS",
-    "C_D_S_L": "CDSL.NS", "Dr_Lal": "LALPATHLAB.NS", "Dynacons": "DYNPRO.NS", "Dynamic": "DYCL.NS",
-    "Frontier": "FRONTIER.BO", "Ganesh": "GANESHHOU.NS", "HDFC": "HDFCAMC.NS",
-    "I_R_C_T_C": "IRCTC.NS", "Indiamart": "INDIAMART.NS", "Indo_Tech": "INDOTECH.NS",
-    "J_B_Chem": "JBCHEPHARM.NS", "Jai_Balaji": "JAIBALAJI.NS", "Jyoti": "JYOTIRES.NS",
-    "KNR": "KNRCON.NS", "Kingfa": "KINGFA.NS", "Kirl": "KIRLPNU.NS", "Macpower": "MACPOWER.NS",
-    "Master": "MASTERTR.NS", "Mazagon": "MAZDOCK.NS", "Monarch": "MONARCH.NS", "Newgen": "NEWGEN.NS",
-    "Polycab": "POLYCAB.NS", "Prec": "PRECWIRE.NS", "RRP": "RRP.BO", "Radhika": "RADHIKAJWE.BO",
-    "Schaeffler": "SCHAEFFLER.NS", "Shakti": "SHAKTIPUMP.NS", "Shanthi": "SHANTIGEAR.NS",
-    "Sharda": "SHARDAMOTR.NS", "Shilchar": "SHILCHAR.NS", "Sika": "SIKA.BO", "Solar": "SOLARINDS.NS",
-    "Stylam": "STYLAMIND.NS", "Swaraj": "SWARAJENG.NS", "Tanfac": "TANFACIND.NS", "Tata": "TATAELXSI.NS",
-    "Timex": "TIMEX.NS", "Voltamp": "VOLTAMP.NS", 
-    "BLS": "BLS.NS", "Apar": "APARINDS.NS", "Ashoka": "ASHOKA.NS", "Astrazeneca": "ASTRAZEN.NS", 
-    "BSE": "BSE.NS", "Cams": "CAMS.NS", "3B": "3BBLACKBIO.NS"
+    "Action": "ACE", "Bharat": "BEL", "Blue_Star": "BLUESTARCO", "Caplin": "CAPLIPOINT",
+    "C_D_S_L": "CDSL", "Dr_Lal": "LALPATHLAB", "Dynacons": "DYNPRO", "Dynamic": "DYCL",
+    "Frontier": "FRONTIER", "Ganesh": "GANESHHOU", "HDFC": "HDFCAMC",
+    "I_R_C_T_C": "IRCTC", "Indiamart": "INDIAMART", "Indo_Tech": "INDOTECH",
+    "J_B_Chem": "JBCHEPHARM", "Jai_Balaji": "JAIBALAJI", "Jyoti": "JYOTIRES",
+    "KNR": "KNRCON", "Kingfa": "KINGFA", "Kirl": "KIRLPNU", "Macpower": "MACPOWER",
+    "Master": "MASTERTR", "Mazagon": "MAZDOCK", "Monarch": "MONARCH", "Newgen": "NEWGEN",
+    "Polycab": "POLYCAB", "Prec": "PRECWIRE", "RRP": "RRP", "Radhika": "RADHIKAJWE",
+    "Schaeffler": "SCHAEFFLER", "Shakti": "SHAKTIPUMP", "Shanthi": "SHANTIGEAR",
+    "Sharda": "SHARDAMOTR", "Shilchar": "SHILCHAR", "Sika": "SIKA", "Solar": "SOLARINDS",
+    "Stylam": "STYLAMIND", "Swaraj": "SWARAJENG", "Tanfac": "TANFACIND", "Tata": "TATAELXSI",
+    "Timex": "TIMEX", "Voltamp": "VOLTAMP", 
+    "BLS": "BLS", "Apar": "APARINDS", "Ashoka": "ASHOKA", "Astrazeneca": "ASTRAZEN", 
+    "BSE": "BSE", "Cams": "CAMS", "3B": "3BBLACKBIO"
 }
 
 def normalize_ticker(name):
-    for key in YAHOO_MAP.keys():
-        if key.upper() in name.upper(): return key
+    for key, value in YAHOO_MAP.items():
+        if key.upper() in name.upper(): return value
     return name
 
-# --- 2. LIVE DATA FETCHER ---
-def fetch_live_data_forced(yahoo_symbol):
-    try:
-        df = yf.download(yahoo_symbol, period="3mo", progress=False)
-        if df.empty: return None, "No data found."
-        
-        df = df.reset_index()
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+# --- 2. SMART LIVE DATA FETCHER (THE FIX) ---
+def fetch_live_data_smart(ticker_base):
+    """
+    Aggressively tries .NS, then .BO, then the raw symbol to find data.
+    """
+    # Remove any existing suffix to get a clean base
+    clean_base = ticker_base.replace(".NS", "").replace(".BO", "")
+    
+    # Priority list: NSE -> BSE -> Raw
+    attempts = [f"{clean_base}.NS", f"{clean_base}.BO", clean_base]
+    
+    for sym in attempts:
+        try:
+            # Download
+            df = yf.download(sym, period="3mo", progress=False)
             
-        df = df[['Date', 'Close', 'Open', 'High', 'Low', 'Volume']]
-        df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
-        return df, "Success"
-    except Exception as e:
-        return None, str(e)
+            if not df.empty:
+                # FIX: Handle MultiIndex columns (The #1 cause of 'No Data' errors)
+                df = df.reset_index()
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                
+                # Standardize columns
+                cols_map = {c: c.capitalize() for c in df.columns}
+                df.rename(columns=cols_map, inplace=True)
+                
+                # Ensure we have Date and Close
+                if 'Date' in df.columns and 'Close' in df.columns:
+                    df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
+                    return df, f"Success ({sym})"
+        except:
+            continue
+            
+    return None, f"Failed to find data for {clean_base} (Tried NSE & BSE)"
 
-# --- 3. LOAD DATA ---
+# --- 3. LOAD CSV DATA ---
 @st.cache_data
 def load_csvs():
     try:
@@ -85,71 +101,63 @@ if 'live_data_cache' not in st.session_state:
     st.session_state['live_data_cache'] = {}
 
 # ==========================================
-# 🚀 SIDEBAR (CONTROLS ARE HERE NOW)
+# 🚀 SIDEBAR CONTROLS
 # ==========================================
 st.sidebar.title("⚡ Gramdev Controls")
 
-# 1. Navigation
 page = st.sidebar.radio("Navigate", ["📊 Dashboard", "🔮 Forecasting", "⚖️ Portfolio"])
-
 st.sidebar.markdown("---")
 st.sidebar.header("🔴 Live Data Manager")
 
-# 2. Global Ticker Selector
+# Global Selector
 valid_tickers = sorted(scores_df['Ticker'].unique())
 selected_ticker = st.sidebar.selectbox("Select Active Stock", valid_tickers)
 
-# 3. Yahoo Symbol Verification
-default_yahoo = YAHOO_MAP.get(selected_ticker, f"{selected_ticker}.NS")
-yahoo_symbol = st.sidebar.text_input("Yahoo Symbol", default_yahoo)
-
-# 4. THE FETCH BUTTON (ALWAYS VISIBLE)
+# Button
 if st.sidebar.button("Fetch Live Data 🔄"):
-    with st.spinner(f"Connecting to {yahoo_symbol}..."):
-        live_data, status = fetch_live_data_forced(yahoo_symbol)
+    with st.spinner(f"Hunting for data on {selected_ticker}..."):
+        # We pass the SIMPLE ticker (e.g., "BEL") and let the Smart Fetcher try .NS and .BO
+        live_data, status = fetch_live_data_smart(selected_ticker)
+        
         if live_data is not None:
             st.session_state['live_data_cache'][selected_ticker] = live_data
-            st.sidebar.success("✅ Updated!")
+            st.sidebar.success(f"✅ {status}")
         else:
-            st.sidebar.error(f"❌ Failed: {status}")
+            st.sidebar.error(f"❌ {status}")
 
 # ==========================================
-# 📄 MAIN PAGES
+# 📄 MAIN APP LOGIC
 # ==========================================
 
-# Prepare Data (Check Memory)
+# Prepare Active Data
 static_data = price_df[price_df['Ticker'] == selected_ticker].sort_values('Date')
 
 if selected_ticker in st.session_state['live_data_cache']:
-    # Merge Logic
     live_part = st.session_state['live_data_cache'][selected_ticker]
+    # Merge
+    live_part = live_part[['Date', 'Close', 'Open', 'High', 'Low', 'Volume']].copy()
     live_part['Ticker'] = selected_ticker
+    
     active_df = pd.concat([static_data, live_part], ignore_index=True)
     active_df = active_df.drop_duplicates(subset=['Date'], keep='last').sort_values('Date')
-    data_source_text = "🟢 LIVE DATA ACTIVE"
+    source_msg = "🟢 LIVE DATA ACTIVE"
 else:
     active_df = static_data
-    data_source_text = "⚠️ USING OLD CSV DATA"
+    source_msg = "⚠️ USING OLD CSV DATA"
 
 # --- PAGE 1: DASHBOARD ---
 if page == "📊 Dashboard":
-    st.title(f"📊 {selected_ticker} Overview")
-    st.caption(data_source_text)
+    st.title(f"📊 {selected_ticker}")
+    st.caption(source_msg)
     
-    # Metric Logic
     latest_price = active_df['Close'].iloc[-1]
     last_date = active_df['Date'].iloc[-1].strftime('%d-%b-%Y')
     
-    sub_f = fund_df[fund_df['Ticker'] == selected_ticker]
     score = scores_df[scores_df['Ticker'] == selected_ticker]['Moat_Score'].values[0]
     
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     c1.metric("Latest Close", f"₹{latest_price:,.2f}", f"Date: {last_date}")
-    c1.metric("Moat Score", f"{score}/100")
-    
-    if not sub_f.empty:
-        sales_col = 'Sales' if 'Sales' in sub_f.columns else sub_f.columns[2]
-        c2.metric("Latest Sales", f"₹{sub_f.iloc[-1][sales_col]:,.2f} Cr")
+    c2.metric("Moat Score", f"{score}/100")
     
     fig = px.line(active_df, x='Date', y='Close', title="Price Trend")
     st.plotly_chart(fig, use_container_width=True)
@@ -157,13 +165,13 @@ if page == "📊 Dashboard":
 # --- PAGE 2: FORECASTING ---
 elif page == "🔮 Forecasting":
     st.title(f"🔮 AI Forecast: {selected_ticker}")
-    st.caption(data_source_text)
+    st.caption(source_msg)
     
     if st.button("Run LSTM Model"):
         if len(active_df) < 60:
-            st.error("Not enough data to forecast.")
+            st.error("Insufficient Data.")
         else:
-            with st.spinner("Training AI Model..."):
+            with st.spinner("Training..."):
                 data = active_df['Close'].values.reshape(-1, 1)
                 scaler = MinMaxScaler(feature_range=(0, 1))
                 scaled = scaler.fit_transform(data)
@@ -186,36 +194,37 @@ elif page == "🔮 Forecasting":
                 last_60 = scaled[-lookback:].reshape(1, lookback, 1)
                 pred = scaler.inverse_transform(model.predict(last_60))[0][0]
                 
-                last_date = active_df['Date'].iloc[-1]
-                next_date = last_date + pd.Timedelta(days=1)
-                if next_date.weekday() == 5: next_date += pd.Timedelta(days=2)
-                elif next_date.weekday() == 6: next_date += pd.Timedelta(days=1)
+                # Next Day Logic
+                last_dt = active_df['Date'].iloc[-1]
+                next_dt = last_dt + pd.Timedelta(days=1)
+                if next_dt.weekday() == 5: next_dt += pd.Timedelta(days=2)
+                elif next_dt.weekday() == 6: next_dt += pd.Timedelta(days=1)
                 
-                st.success(f"🧠 Prediction for {next_date.strftime('%d-%b-%Y')}: ₹{pred:.2f}")
+                st.success(f"🧠 Forecast for {next_dt.strftime('%d-%b-%Y')}: ₹{pred:.2f}")
 
 # --- PAGE 3: PORTFOLIO ---
 elif page == "⚖️ Portfolio":
     st.title("⚖️ Portfolio Optimization")
-    st.info("Note: Portfolio uses stored CSV data for speed.")
+    st.info("Uses CSV data for speed.")
     
-    multi_select = st.multiselect("Select Stocks", valid_tickers, default=valid_tickers[:3])
+    selection = st.multiselect("Select Stocks", valid_tickers, default=valid_tickers[:3])
     
-    if len(multi_select) >= 3:
-        if st.button("Optimize Allocation"):
-            pivot = price_df.pivot(index='Date', columns='Ticker', values='Close')[multi_select].dropna()
+    if len(selection) >= 3:
+        if st.button("Optimize"):
+            pivot = price_df.pivot(index='Date', columns='Ticker', values='Close')[selection].dropna()
             returns = pivot.pct_change().dropna()
             
             mu = returns.mean() * 252
             cov = returns.cov() * 252
             cons = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-            bounds = tuple((0, 1) for _ in range(len(multi_select)))
-            init = [1/len(multi_select)]*len(multi_select)
+            bounds = tuple((0, 1) for _ in range(len(selection)))
+            init = [1/len(selection)]*len(selection)
             
             res = minimize(lambda w: -(np.sum(mu*w)/np.sqrt(np.dot(w.T,np.dot(cov,w)))), init, bounds=bounds, constraints=cons)
             
-            df_res = pd.DataFrame({'Stock': multi_select, 'Weight': res.x})
+            df_res = pd.DataFrame({'Stock': selection, 'Weight': res.x})
             df_res['Weight'] = df_res['Weight'].apply(lambda x: f"{x*100:.1f}%")
             
             c1, c2 = st.columns(2)
             c1.table(df_res)
-            c2.plotly_chart(px.pie(values=res.x, names=multi_select, title="Allocation"))
+            c2.plotly_chart(px.pie(values=res.x, names=selection, title="Allocation"))
