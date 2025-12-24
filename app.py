@@ -143,3 +143,99 @@ if page == "📊 Dashboard":
     c1, c2 = st.columns(2)
     c1.metric("Latest Close", f"₹{latest_price:,.2f}", f"Date: {last_date}")
     c2.metric("Moat Score", f"{score}/100")
+    
+    fig = px.line(active_df, x='Date', y='Close', title="Price Trend")
+    st.plotly_chart(fig, use_container_width=True)
+
+# --- PAGE 2: FORECASTING ---
+elif page == "🔮 Forecasting":
+    st.title(f"🔮 AI Forecast: {selected_ticker}")
+    st.caption(source_msg)
+    
+    # --- RESTORED: 3 OPTIONS ---
+    analysis_type = st.radio("Select Analysis Module", ["LSTM Price Forecast", "GARCH Volatility Risk", "ARIMA Trend"])
+    
+    if len(active_df) < 60:
+        st.error("Insufficient Data for Analysis.")
+    else:
+        # Date Logic
+        last_dt = active_df['Date'].iloc[-1]
+        next_dt = last_dt + pd.Timedelta(days=1)
+        if next_dt.weekday() == 5: next_dt += pd.Timedelta(days=2)
+        elif next_dt.weekday() == 6: next_dt += pd.Timedelta(days=1)
+        date_str = next_dt.strftime("%d %b %Y")
+
+        # --- OPTION 1: LSTM ---
+        if analysis_type == "LSTM Price Forecast":
+            st.subheader("🧠 Deep Learning (LSTM)")
+            if st.button("Run LSTM Model"):
+                with st.spinner("Training Brain..."):
+                    data = active_df['Close'].values.reshape(-1, 1)
+                    scaler = MinMaxScaler(feature_range=(0, 1))
+                    scaled = scaler.fit_transform(data)
+                    
+                    X, y = [], []
+                    lookback = 60
+                    for i in range(lookback, len(scaled)):
+                        X.append(scaled[i-lookback:i, 0])
+                        y.append(scaled[i, 0])
+                    X, y = np.array(X), np.array(y)
+                    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
+                    
+                    model = Sequential()
+                    model.add(LSTM(50, return_sequences=True, input_shape=(X.shape[1], 1)))
+                    model.add(LSTM(50))
+                    model.add(Dense(1))
+                    model.compile(optimizer='adam', loss='mse')
+                    model.fit(X, y, epochs=5, batch_size=32, verbose=0)
+                    
+                    last_60 = scaled[-lookback:].reshape(1, lookback, 1)
+                    pred = scaler.inverse_transform(model.predict(last_60))[0][0]
+                    st.success(f"🧠 LSTM Prediction for {date_str}: ₹{pred:.2f}")
+
+        # --- OPTION 2: GARCH ---
+        elif analysis_type == "GARCH Volatility Risk":
+            st.subheader("⚠️ GARCH Volatility Model")
+            if st.button("Analyze Risk"):
+                returns = active_df['Close'].pct_change().dropna() * 100
+                am = arch_model(returns, vol='Garch', p=1, q=1)
+                res = am.fit(disp='off')
+                st.write(res.summary())
+                st.line_chart(res.conditional_volatility)
+                st.info("Higher spikes mean higher risk of crash/fluctuation.")
+
+        # --- OPTION 3: ARIMA ---
+        elif analysis_type == "ARIMA Trend":
+            st.subheader("📈 ARIMA Trend Model")
+            if st.button("Run ARIMA"):
+                model = ARIMA(active_df['Close'], order=(5,1,0))
+                fit = model.fit()
+                forecast = fit.forecast(steps=1).iloc[0]
+                st.info(f"📈 ARIMA Forecast for {date_str}: ₹{forecast:.2f}")
+
+# --- PAGE 3: PORTFOLIO ---
+elif page == "⚖️ Portfolio":
+    st.title("⚖️ Portfolio Optimization")
+    st.info("Uses CSV data for speed.")
+    
+    selection = st.multiselect("Select Stocks", valid_tickers, default=valid_tickers[:3])
+    
+    if len(selection) >= 3:
+        if st.button("Optimize"):
+            pivot = price_df.pivot(index='Date', columns='Ticker', values='Close')[selection].dropna()
+            returns = pivot.pct_change().dropna()
+            
+            mu = returns.mean() * 252
+            cov = returns.cov() * 252
+            cons = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+            bounds = tuple((0, 1) for _ in range(len(selection)))
+            init = [1/len(selection)]*len(selection)
+            
+            res = minimize(lambda w: -(np.sum(mu*w)/np.sqrt(np.dot(w.T,np.dot(cov,w)))), init, bounds=bounds, constraints=cons)
+            
+            df_res = pd.DataFrame({'Stock': selection, 'Weight': res.x})
+            df_res['Weight'] = df_res['Weight'].apply(lambda x: f"{x*100:.1f}%")
+            
+            c1, c2 = st.columns(2)
+            c1.table(df_res)
+            c2.plotly_chart(px.pie(values=res.x, names=selection, title="Allocation"))
